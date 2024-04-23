@@ -1,0 +1,262 @@
+---
+title: "NYPD Incident Report"
+author: "Jessica W"
+date: "2024-03-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE, message = FALSE)
+
+```
+
+```{r}
+# Importing necessary libraries
+library(dplyr)
+library(tibble)
+library(hms)
+library(lubridate)
+library(leaflet)
+library(purrr)
+library(ggplot2)
+```
+
+
+Description:
+
+Data contains the shooting incidents that occurred In New York City between 2006 and the end of the previous calender year. The records contain information about the location and time of the each incident as well as information about the suspects and victims of each case
+
+```{r import file}
+
+# Read in csv and print a summary for overview of data
+incident_data <- "../R_projects/NYPD_Shooting_Incident_Data__Historic_.csv"
+data <- read.csv(incident_data)
+summary(data)
+
+```
+
+
+
+```{r data cleanup, echo=TRUE, warning=FALSE}
+
+# Group together categorical columns to change to factor
+factor_vars <- c('PERP_AGE_GROUP', 'PERP_SEX', 'PERP_RACE', 'VIC_AGE_GROUP',
+                 'VIC_SEX', 'VIC_RACE', 'BORO')
+
+cleaned_data <- data %>%
+  # Desired columns
+  select(all_of(c(factor_vars, 'OCCUR_DATE', 'OCCUR_TIME', 'Latitude', 'Longitude', 'STATISTICAL_MURDER_FLAG'))) %>%
+  # Change all data point values where an empty string, (null) or unknown to NA
+  # to fix any missing data also to condense group sizes when using summary
+  mutate(across(everything(), ~case_when(
+    . == "" | . == "(null)" | . == 'UNKNOWN' | . == 'U' ~ NA, TRUE ~ . ))) %>% 
+  # Change date, time, and factor datatype
+  mutate(OCCUR_DATE = as.Date(OCCUR_DATE, format = "%m/%d/%Y"),
+         OCCUR_TIME = as_hms(OCCUR_TIME),
+         across(all_of(factor_vars), as.factor))
+
+summary(cleaned_data)
+
+```
+```{r map_labels}
+
+# Create new column with a label id for creating the colors/legend on the map
+labeled_data <- cleaned_data %>%
+  filter(!is.na(PERP_RACE)) %>% 
+  mutate(race_id = case_when(
+    PERP_RACE == 'AMERICAN INDIAN/ALASKAN NATIVE' ~ 1,
+    PERP_RACE == 'ASIAN / PACIFIC ISLANDER' ~ 2,
+    PERP_RACE == 'BLACK' ~ 3,
+    PERP_RACE == 'BLACK HISPANIC' ~ 4,
+    PERP_RACE == 'WHITE' ~ 5,
+    PERP_RACE == 'WHITE HISPANIC' ~ 6,
+  ))
+
+```
+
+```{r map_plot}
+
+# Create base map around NYC
+ny_map <- leaflet() %>%
+  setView(lng = -74.006, lat = 40.7128, zoom = 10)  # Centered around NYC
+
+# Add default OpenStreetMap tiles
+ny_map <- ny_map %>% addTiles()
+
+# Define start and end dates for filtering
+start_date <- as.Date("2021-01-01")
+end_date <- as.Date("2022-01-31")
+
+# Color palette based off of the race_id column
+color_palette <- colorFactor("Dark2", levels = unique(labeled_data$race_id))
+
+# Add circle markers using lat and long from the data
+ny_map <- ny_map %>% addCircleMarkers(
+  data = labeled_data %>% 
+  filter(OCCUR_DATE >= start_date & OCCUR_DATE <= end_date),
+  lng = ~Longitude,
+  lat = ~Latitude,
+  radius = 1,
+  color = ~color_palette(race_id),
+  group = ~PERP_RACE  # Use category_column for the legend items
+  
+)
+
+# Add the legend and the ability to filter out the legend items
+ny_map <- ny_map %>%
+  addLayersControl(
+    # Specify unique categories for the legend
+    overlayGroups = unique(labeled_data$PERP_RACE),
+    # Expand the legend by default
+    options = layersControlOptions(collapsed = TRUE)      
+  )
+
+# Print out the map
+ny_map
+
+```
+
+Analysis:
+
+With this map, it is easily seen where there is the most common location for
+the incidents to occur. With a significant grouping of the incidents in
+locations such as Brooklyn, The Bronx and even to the south East of Queens.
+Which we can fact check by looking at the summary and pie chart
+provided by the code below.The data points have also been color coded to see the
+amount of incidents committed by race and in what areas they are occurring the
+most often. It is easily noted that the there is the most significant amount of
+incidents involving black perpetrators all through the different areas,
+but with there being a significant amount of incidents involving Hispanic
+perpetrators in the the Bronx. A following question would be what the ethnic 
+population of those areas are as well as a follow up analysis and map could
+be done one the victims races in those areas as well.
+
+```{r incidents_per_boro_table}
+
+incidents_per_boro <- labeled_data %>% 
+  group_by(BORO) %>% 
+  summarize(count = n()) %>% 
+  arrange(desc(count))
+
+incidents_per_boro
+
+```
+
+```{r incident_per_boro_pie_chart}
+
+ggplot(incidents_per_boro, aes(x = "", y = count, fill = BORO)) +
+  geom_bar(stat = "identity") +
+  coord_polar("y", start = 0) +  # Convert to polar coordinates
+  labs(title = "Incidents Per Boro", fill = "Categories") +  # Add title and legend
+  theme_void() +  # Remove axes and background
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+```{r density_graph}
+
+# Create density plot showing the amount of incidents throughout the day
+density_plot <- ggplot(cleaned_data, aes(x = OCCUR_TIME, fill = PERP_SEX)) +
+  geom_density(alpha = 0.7) +
+  labs(title = "Density Plot of Incidents Throughout the Day",
+       x = "Time of Day",
+       y = "Density") +
+  theme_minimal() +
+  scale_x_time(breaks = hms::hms(hours = seq(0, 24, by = 4)),
+               labels = function(x) {
+                 sprintf("%02d:%02d", hour(x), minute(x))
+               }) +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Print the plot
+print(density_plot)
+```
+
+Analysis:
+
+This density plot clearly demonstrates the most likely time of day that an
+incident would occur. Those being, as one might expect, very early in the
+morning and very late into the night with peak activity being likely around 2am
+and around 10pm. However, this data could likely be different depending on the
+time of the year which would need further investigation. Additionally, the 
+chart shows the difference, however ultimately slight, between the likelihood of
+an incident occurring throughout the day by a Male or Female perpetrator.
+
+```{r yearly_incident_activity_1}
+# Extract month and year and make integers
+labeled_data$month <- month(labeled_data$OCCUR_DATE) %>% 
+  as.integer(labeled_data$month)
+labeled_data$year <- year(labeled_data$OCCUR_DATE) %>% 
+  as.integer(labeled_data$year)
+
+# Create new start and end dates for new filtering
+start_date2 <- as.Date("2018-01-01")
+end_date2 <- as.Date("2022-12-31")
+
+# Identify counts
+yearly_activity <- labeled_data %>%
+  filter(OCCUR_DATE >= start_date2 & OCCUR_DATE <= end_date2) %>% 
+  group_by(month, year) %>%
+  summarise(count = n())
+
+# Create a variable with month names for x-axis labeling
+custom_month_names <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec") 
+
+# Make the month a factor with the labels as the month names
+yearly_activity$month <- factor(yearly_activity$month, levels = 1:12, labels = custom_month_names)
+
+# Plot the yearly activity
+ggplot(yearly_activity, aes(x = month, y = count, fill = factor(year))) +
+  geom_bar(stat = "identity", position = "dodge") + # side by side bar chart
+  labs(x = "Month", y = "Number of Incidents", fill = "Year") +
+  scale_fill_discrete(name = "Year") + # filling in legend color by year
+  theme_minimal() +
+  ggtitle("Number of Incidents by Month and Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+
+```{r yearly_incident_activity_2}
+
+# Second plot for a different view
+ggplot(yearly_activity, aes(x = month, y = count, color = factor(year), group = year)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Month", y = "Number of Incidents", color = "Year") +
+  scale_color_discrete(name = "Year") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ggtitle("Number of Incidents by Month and Year") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+Analysis:
+
+The last two charts show the trends of incidents both across multiple years as
+well as throughout the months of the year.The bar chart depicts how the
+incidents were much fewer in 2018 and 2019 and have steadily grown over the four years.
+It is worth noting that COVID-19 had a great influence in the world during 2019
+so this could also be possible of being influenced by COVID-19. The second chart
+shows a more in depth look at the change of incident occurrences throughout the
+year. Even with the fewer incidents in 208 and 2019, there are still more
+significant spikes in occurrences during the warmer months and peaking in May,
+June and July and then tapering off around September and October.
+
+
+
+Conclusion:
+
+In this report, we analyzed some of the variables involved in NYC shooting
+incidents. We looked at map that demonstrated the most active locations for
+these incidents to occur as well as the race of those who caused the incidents
+in these locations.We could see by looking at the data that the most likely time
+of day for these incidents to occur, appear to be around 2am and 10pm with a
+slight variance in the time whether male or female perpetrator. In the last
+two charts we observed that the number of incidents per year had increased and
+that throughout the year the most active time for the occurrences is in the
+warmer months.
